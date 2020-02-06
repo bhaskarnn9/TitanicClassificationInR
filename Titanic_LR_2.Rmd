@@ -1,0 +1,208 @@
+---
+title: "Titanic_LR_2"
+author: "bneella"
+date: "05/02/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## TITANIC
+
+The RMS Titanic was a British passenger liner that sank in the North Atlantic Ocean in the early morning hours of 15 April 1912, after it collided with an iceberg during its maiden voyage from Southampton to New York City. There were an estimated 2,224 passengers and crew aboard the ship, and more than 1,500 died, making it one of the deadliest commercial peacetime maritime disasters in modern history. The RMS Titanic was the largest ship afloat at the time it entered service and was the second of three Olympic-class ocean liners operated by the White Star Line. The Titanic was built by the Harland and Wolff shipyard in Belfast. Thomas Andrews, her architect, died in the disaster.
+
+## Challenge
+What sorts of people were more likely to survive? Predict using passenger data (i.e., name, age, gender, socio-economic class, etc.).
+Predict the survival of passenger using the most influencing variables as predictors
+
+## Major steps
+1. Get and understand the data
+2. Data wrangling (process)
+3. Vizualization
+4. Statistical Modeling, Algorithms, Machine Learning
+5. Residual analyis
+
+# Clear environment
+```{r}
+rm(list = ls(all=TRUE))
+```
+
+# Libraries
+```{r echo=FALSE}
+# data wrangling
+library('readxl') # readig=ng excel
+library('tidyverse') # loads multiple packages
+library('corrplot') # correlation visualization
+library('VIM') # visualizing missing values
+library('caret') # machine learning
+library('RANN') # for knn Impute
+library('reshape2') # data transformation
+library('ggplot2')
+```
+
+# Read excel file
+```{r echo=FALSE}
+raw_data = read_excel('titanic.xlsx', sheet = 'Titanic')
+str(raw_data)
+```
+
+# Make target variable as the last one in the df
+We have 14 columns and target variable is 2nd
+```{r echo=FALSE}
+titanic_cols = c(3:14)
+titanic_cols = c(1, titanic_cols, 2)
+raw_data = raw_data[, titanic_cols]
+names(raw_data)
+head(raw_data, 5)
+
+```
+
+# Given that body = body identification
+```{r echo=FALSE}
+colnames(raw_data)[colnames(raw_data) == 'body'] = 'passenger_id'
+colnames(raw_data)
+```
+
+# Also it makes sense to have passenger_id as the first column
+```{r echo=FALSE}
+titanic_cols = c(1:11)
+titanic_cols = c(12, titanic_cols, 13, 14)
+raw_data = raw_data[, titanic_cols]
+names(raw_data)
+head(raw_data, 5)
+```
+
+
+# Unique values per column
+```{r echo=FALSE}
+lapply(raw_data, function(x) length(unique(x)))
+```
+
+# Check for missing values
+```{r echo=FALSE}
+missing_values = raw_data %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_values
+```
+Major missing values
+age           = 20 %
+cabin         = 77 %
+boat          = 63 %
+passenger_id  = 90 %
+
+# Visualize missing values
+```{r echo=FALSE}
+missing_values = gather(missing_values, key = 'feature', value = 'missing_pct')
+missing_values %>%
+  ggplot(aes(x=reorder(feature, - missing_pct), y=missing_pct)) + geom_bar(stat = 'identity', fill='red') + coord_flip() + theme_bw()
+```
+
+# Data manipulation
+passenger_id is just an interger but with no statistical significance.
+Let us give new id in an ascending order
+```{r echo=FALSE}
+raw_data$passenger_id = c(1:dim(raw_data)[1])
+head(raw_data)
+tail(raw_data)
+```
+
+
+handle age
+```{r echo=FALSE}
+raw_data$age[is.na(raw_data$age)] = mean(raw_data$age, na.rm = TRUE)
+```
+
+check missing_values again
+```{r echo=FALSE}
+missing_values = raw_data %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_values
+```
+
+handle embarked and fare
+```{r echo=FALSE}
+raw_data$embarked = replace(raw_data$embarked, which(is.na(raw_data$embarked)), '$')
+raw_data$fare[is.na(raw_data$fare)] = mean(raw_data$fare, na.rm = TRUE)
+```
+
+check missing_values again
+```{r echo=FALSE}
+missing_values = raw_data %>% summarise_all(funs(sum(is.na(.))/n()))
+missing_values
+```
+
+
+titles
+```{r echo=FALSE}
+# Grab title from passenger names
+raw_data$title <- gsub('(.*, )|(\\..*)', '', raw_data$name)
+
+# Show title counts by sex
+table(raw_data$sex, raw_data$title)
+
+# Titles with very low cell counts to be combined to "rare" level
+rare_title <- c('Dona', 'Lady', 'the Countess','Capt', 'Col', 'Don', 
+                'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+
+# Also reassign mlle, ms, and mme accordingly
+raw_data$title[raw_data$title == 'Mlle']        <- 'Miss' 
+raw_data$title[raw_data$title == 'Ms']          <- 'Miss'
+raw_data$title[raw_data$title == 'Mme']         <- 'Mrs' 
+raw_data$title[raw_data$title %in% rare_title]  <- 'Rare Title'
+
+# Show title counts by sex again
+table(raw_data$sex, raw_data$title)
+
+# Finally, grab surname from passenger name
+raw_data$surname <- sapply(raw_data$name,  
+                      function(x) strsplit(x, split = '[,.]')[[1]][1])
+cat(paste('We have <b>', nlevels(factor(raw_data$surname)), '</b> unique surnames. I would be interested to infer ethnicity based on surname --- another time.'))
+```
+
+
+Create a family size variable including the passenger themselves
+```{r echo=FALSE}
+raw_data$familysize <- raw_data$sibsp + raw_data$parch + 1
+raw_data$family <- paste(raw_data$surname, raw_data$familysize, sep='_')
+head(raw_data)
+```
+
+
+tickets
+```{r echo=FALSE}
+##Engineer features based on all the passengers with the same ticket
+
+ticket.unique <- rep(0, nrow(raw_data))
+
+tickets <- unique(raw_data$ticket)
+
+for (i in 1:length(tickets)) {
+  current.ticket <- tickets[i]
+  party.indexes <- which(full$Ticket == current.ticket)
+  for (k in 1:length(party.indexes)) {
+    ticket.unique[party.indexes[k]] <- length(party.indexes)
+  }
+}
+
+raw_data$ticket.unique <- ticket.unique
+
+raw_data$ticket.size[raw_data$ticket.unique == 1]   <- 'Single'
+
+raw_data$ticket.size[raw_data$ticket.unique < 5 & raw_data$ticket.unique>= 2]   <- 'Small'
+
+raw_data$ticket.size[raw_data$ticket.unique >= 5]   <- 'Big'
+```
+
+
+
+
+survival
+```{r echo=FALSE}
+
+raw_data <- raw_data %>%
+  mutate(survived = case_when(survived==1 ~ "Yes", 
+                              survived==0 ~ "No"))
+head(raw_data)
+```
+
+
